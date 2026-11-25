@@ -1,0 +1,85 @@
+name: build-feed
+
+# Rebuilds the Synthetic feeds every 3 hours and publishes them on GitHub Pages:
+#   https://<owner>.github.io/<repo>/vays.xml
+# If a build fails (supplier down, broken feed), the last good copy stays online.
+
+on:
+  schedule:
+    - cron: '17 */3 * * *'   # every 3 hours (UTC)
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['build-prom.ps1', '.github/workflows/build-feed.yml']
+
+permissions:
+  contents: write    # monthly keepalive commit
+  pages: write
+  id-token: write
+
+concurrency:
+  group: build-feed
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest   # Windows PowerShell 5.1, same as the local build
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/configure-pages@v6
+        id: pages
+
+      - name: Build VAYS for Synthetic
+        continue-on-error: true
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force site | Out-Null
+          powershell -NoProfile -ExecutionPolicy Bypass -File build-prom.ps1 -Format synthetic -StripBrandCode -OutFile site/vays.xml
+          if ($LASTEXITCODE -ne 0) { Remove-Item site/vays.xml -ErrorAction SilentlyContinue; exit 1 }
+
+      - name: Keep the last good copy of any feed that failed
+        shell: powershell
+        run: |
+          $base = '${{ steps.pages.outputs.base_url }}'.TrimEnd('/')
+          $ProgressPreference = 'SilentlyContinue'
+          New-Item -ItemType Directory -Force site | Out-Null
+          $status = @("updated (UTC): $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm'))")
+          foreach ($f in @('vays.xml')) {
+            if (Test-Path "site/$f") {
+              $x = New-Object Xml.XmlDocument; $x.Load((Resolve-Path "site/$f").Path)
+              $o = $x.SelectNodes('//offer'); $s = @($o | Where-Object { $_.GetAttribute('available') -eq 'true' }).Count
+              $status += "${f}: fresh, $($o.Count) offers, $s in stock"
+            } else {
+              try { Invoke-WebRequest "$base/$f" -OutFile "site/$f" -UseBasicParsing -TimeoutSec 120; $status += "${f}: BUILD FAILED, kept the previous copy" }
+              catch { throw "$f failed to build and there is no previous copy online" }
+            }
+          }
+          $status | Set-Content site/status.txt -Encoding utf8
+          $status
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - uses: actions/deploy-pages@v5
+        id: deploy
+
+      # GitHub switches off scheduled runs after 60 days without commits, so commit a date once a month
+      - name: Keepalive
+        if: github.event_name == 'schedule'
+        shell: bash
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - last )) -gt $(( 30 * 24 * 3600 )) ]; then
+            date -u +%F > .keepalive
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .keepalive
+            git commit -m "keepalive"
+            git push
+          fi
