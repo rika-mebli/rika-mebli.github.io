@@ -1,7 +1,8 @@
 name: build-feed
 
 # Rebuilds the Synthetic feeds every 3 hours and publishes them on GitHub Pages:
-#   https://<owner>.github.io/<repo>/vays.xml
+#   https://<owner>.github.io/<repo>/vays.xml            VAYS, from the supplier feed
+#   https://<owner>.github.io/<repo>/stoly-dzerkala.xml  her makeup tables, mirrors, poufs, from her Prom export
 # If a build fails (supplier down, broken feed), the last good copy stays online.
 
 on:
@@ -10,7 +11,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['build-prom.ps1', '.github/workflows/build-feed.yml']
+    paths: ['build-prom.ps1', 'build-own.ps1', '.github/workflows/build-feed.yml']
 
 permissions:
   contents: write    # monthly keepalive commit
@@ -39,6 +40,16 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File build-prom.ps1 -Format synthetic -StripBrandCode -OutFile site/vays.xml
           if ($LASTEXITCODE -ne 0) { Remove-Item site/vays.xml -ErrorAction SilentlyContinue; exit 1 }
 
+      - name: Build makeup tables and mirrors for Synthetic
+        continue-on-error: true
+        shell: powershell
+        env:
+          OWN_FEED_URL: ${{ secrets.OWN_FEED_URL }}   # her Prom YML export link, kept out of the public code
+        run: |
+          New-Item -ItemType Directory -Force site | Out-Null
+          powershell -NoProfile -ExecutionPolicy Bypass -File build-own.ps1 -OutFile site/stoly-dzerkala.xml
+          if ($LASTEXITCODE -ne 0) { Remove-Item site/stoly-dzerkala.xml -ErrorAction SilentlyContinue; exit 1 }
+
       - name: Keep the last good copy of any feed that failed
         shell: powershell
         run: |
@@ -46,7 +57,7 @@ jobs:
           $ProgressPreference = 'SilentlyContinue'
           New-Item -ItemType Directory -Force site | Out-Null
           $status = @("updated (UTC): $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm'))")
-          foreach ($f in @('vays.xml')) {
+          foreach ($f in @('vays.xml', 'stoly-dzerkala.xml')) {
             if (Test-Path "site/$f") {
               $x = New-Object Xml.XmlDocument; $x.Load((Resolve-Path "site/$f").Path)
               $o = $x.SelectNodes('//offer'); $s = @($o | Where-Object { $_.GetAttribute('available') -eq 'true' }).Count
