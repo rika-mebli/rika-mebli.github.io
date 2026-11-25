@@ -1,8 +1,8 @@
 name: build-feed
 
 # Rebuilds the Synthetic feeds every 3 hours and publishes them on GitHub Pages:
-#   https://<owner>.github.io/<repo>/vays.xml            VAYS, from the supplier feed
-#   https://<owner>.github.io/<repo>/stoly-dzerkala.xml  her makeup tables, mirrors, poufs, from her Prom export
+#   https://rika-mebli.github.io/vays.xml            VAYS, from the supplier feed
+#   https://rika-mebli.github.io/stoly-dzerkala.xml  her makeup tables, mirrors, poufs, from her Prom export
 # If a build fails (supplier down, broken feed), the last good copy stays online.
 
 on:
