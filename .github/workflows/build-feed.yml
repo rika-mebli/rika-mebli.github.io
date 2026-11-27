@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['build-prom.ps1', 'build-own.ps1', '.github/workflows/build-feed.yml']
+    paths: ['build-prom.ps1', 'build-own.ps1', 'synthetic-map.ps1', '.github/workflows/build-feed.yml']
 
 permissions:
   contents: write    # monthly keepalive commit

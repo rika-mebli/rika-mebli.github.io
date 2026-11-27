@@ -23,6 +23,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $inv = [Globalization.CultureInfo]::InvariantCulture
 $IC = [Text.RegularExpressions.RegexOptions]::IgnoreCase
+. (Join-Path $PSScriptRoot 'synthetic-map.ps1')
 
 # ======================================================================
 #  TEXT TEMPLATES (edit here when the client sends her own template)
@@ -673,18 +674,30 @@ $settings.Indent = $true; $settings.Encoding = New-Object System.Text.UTF8Encodi
 $w = [System.Xml.XmlWriter]::Create($outPath, $settings)
 $w.WriteStartDocument()
 $w.WriteStartElement('yml_catalog'); $w.WriteAttributeString('date', (Get-Date).ToUniversalTime().AddHours(2).ToString('yyyy-MM-dd HH:mm', $inv))
+if ($Format -eq 'synthetic') { Write-SyNamespace $w }
 $w.WriteStartElement('shop')
 $w.WriteElementString('name', 'Rika Mebli'); $w.WriteElementString('company', 'Rika Mebli'); $w.WriteElementString('url', 'https://rika-mebli.prom.ua/')
 $w.WriteStartElement('currencies'); $w.WriteStartElement('currency'); $w.WriteAttributeString('id', 'UAH'); $w.WriteAttributeString('rate', '1'); $w.WriteEndElement(); $w.WriteEndElement()
-$w.WriteStartElement('categories')
-foreach ($cid in $srcCats.Keys) {
-  if (-not $usedCats[$cid]) { continue }
-  if (-not $CatUa.ContainsKey($cid)) { Write-Warning "untranslated category $cid ($($srcCats[$cid].name))" }
-  $w.WriteStartElement('category'); $w.WriteAttributeString('id', $cid)
-  if ($srcCats[$cid].parent) { $w.WriteAttributeString('parentId', $srcCats[$cid].parent) }
-  $w.WriteString($(if ($CatUa.ContainsKey($cid)) { $CatUa[$cid] } else { $srcCats[$cid].name })); $w.WriteEndElement()
+if ($Format -eq 'synthetic') {
+  # Synthetic categories (with sy_code) instead of the supplier ones; unknown product types keep the supplier category
+  $syCodes = New-Object System.Collections.Generic.List[string]; $syFallback = [ordered]@{}; $syUnmapped = @{}
+  foreach ($it in $ordered) {
+    $it | Add-Member -NotePropertyName sy -NotePropertyValue (Get-SyVays $it.type $it.cat) -Force
+    if ($it.sy) { $syCodes.Add($it.sy[0]) }
+    else { $syUnmapped["$($it.type)"] = $true; $syFallback[$it.cat] = $(if ($CatUa.ContainsKey($it.cat)) { $CatUa[$it.cat] } else { $srcCats[$it.cat].name }) }
+  }
+  Write-SyCategories $w $syCodes.ToArray() $syFallback
+} else {
+  $w.WriteStartElement('categories')
+  foreach ($cid in $srcCats.Keys) {
+    if (-not $usedCats[$cid]) { continue }
+    if (-not $CatUa.ContainsKey($cid)) { Write-Warning "untranslated category $cid ($($srcCats[$cid].name))" }
+    $w.WriteStartElement('category'); $w.WriteAttributeString('id', $cid)
+    if ($srcCats[$cid].parent) { $w.WriteAttributeString('parentId', $srcCats[$cid].parent) }
+    $w.WriteString($(if ($CatUa.ContainsKey($cid)) { $CatUa[$cid] } else { $srcCats[$cid].name })); $w.WriteEndElement()
+  }
+  $w.WriteEndElement()
 }
-$w.WriteEndElement()
 
 $w.WriteStartElement('offers')
 $maxName = 0; $unknownTypes = @{}
@@ -702,13 +715,17 @@ foreach ($it in $ordered) {
   $w.WriteElementString('vendorCode', $(if ($StripBrandCode) { $it.vc -replace '^VAYS-', '' } else { $it.vc }))
   $w.WriteElementString('price', $it.price.ToString('0.##', $inv))
   $w.WriteElementString('currencyId', 'UAH')
-  $w.WriteElementString('categoryId', $it.cat)
+  if ($Format -eq 'synthetic') {
+    $w.WriteElementString('categoryId', $(if ($it.sy) { $it.sy[0] } else { $it.cat }))
+    $war = [regex]::Match("$($it.pr['Гарантийный срок'])", '\d+')
+    Write-SyOffer $w $it.sy $(if ($war.Success) { [int]$war.Value } else { 0 }) 0 $it.price $it.qty
+  } else { $w.WriteElementString('categoryId', $it.cat) }
   foreach ($pic in $it.pics) { $w.WriteElementString('picture', $pic) }
   $w.WriteStartElement('description'); $w.WriteCData((Safe-CData $main.desc)); $w.WriteEndElement()
   $w.WriteStartElement("description$sfx"); $w.WriteCData((Safe-CData $alt.desc)); $w.WriteEndElement()
   $w.WriteElementString('keywords', $main.kw)
   $w.WriteElementString("keywords$sfx", $alt.kw)
-  $w.WriteElementString('quantity_in_stock', "$($it.qty)")
+  if ($Format -ne 'synthetic') { $w.WriteElementString('quantity_in_stock', "$($it.qty)") }
   foreach ($k in $it.params.Keys) { $w.WriteStartElement('param'); $w.WriteAttributeString('name', $k); if ($ParamUnit.ContainsKey($k)) { $w.WriteAttributeString('unit', $ParamUnit[$k]) }; $w.WriteString($it.params[$k]); $w.WriteEndElement() }
   $w.WriteEndElement()
 }
@@ -726,3 +743,7 @@ if (-not $KeepModelCodes) { "model codes removed from titles; kept for $clashMod
 if ($stats.fixedParams.Count) { "supplier typos fixed by majority: " + ($stats.fixedParams -join '; ') }
 if ($stats.droppedParams.Count) { "params removed to keep variants consistent: " + ($stats.droppedParams -join '; ') }
 if ($unknownTypes.Count) { Write-Warning ("product types without a template entry: " + ($unknownTypes.Keys -join ', ')) }
+if ($Format -eq 'synthetic') {
+  "Synthetic categories: " + ((@($ordered | Where-Object { $_.sy } | Group-Object { $SyCatName[$_.sy[0]] } | Sort-Object Count -Descending | ForEach-Object { "$($_.Name) $($_.Count)" })) -join ', ')
+  if ($syUnmapped.Count) { Write-Warning ("no Synthetic category for: " + ($syUnmapped.Keys -join ', ') + " (add them to synthetic-map.ps1)") }
+}

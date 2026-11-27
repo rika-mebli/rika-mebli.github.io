@@ -14,6 +14,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if (-not $Source) { throw 'No source: pass -Source or set OWN_FEED_URL' }
+. (Join-Path $PSScriptRoot 'synthetic-map.ps1')
 $inv = [Globalization.CultureInfo]::InvariantCulture
 $IC = [Text.RegularExpressions.RegexOptions]::IgnoreCase
 
@@ -795,18 +796,18 @@ $settings = New-Object System.Xml.XmlWriterSettings; $settings.Indent = $true; $
 $w = [System.Xml.XmlWriter]::Create($outPath, $settings)
 $w.WriteStartDocument()
 $w.WriteStartElement('yml_catalog'); $w.WriteAttributeString('date', (Get-Date).ToUniversalTime().AddHours(2).ToString('yyyy-MM-dd HH:mm', $inv))
+Write-SyNamespace $w
 $w.WriteStartElement('shop')
 $w.WriteElementString('name', 'Rika Mebli'); $w.WriteElementString('company', 'Rika Mebli'); $w.WriteElementString('url', 'https://rika-mebli.prom.ua/')
 $w.WriteStartElement('currencies'); $w.WriteStartElement('currency'); $w.WriteAttributeString('id', 'UAH'); $w.WriteAttributeString('rate', '1'); $w.WriteEndElement(); $w.WriteEndElement()
-$w.WriteStartElement('categories')
-foreach ($cid in $srcCats.Keys) {
-  if (-not $usedCats[$cid]) { continue }
-  if (-not $CatUa.ContainsKey($cid)) { Write-Warning "untranslated category $cid ($($srcCats[$cid].name))" }
-  $w.WriteStartElement('category'); $w.WriteAttributeString('id', $cid)
-  if ($srcCats[$cid].parent -and $usedCats[$srcCats[$cid].parent]) { $w.WriteAttributeString('parentId', $srcCats[$cid].parent) }
-  $w.WriteString($(if ($CatUa.ContainsKey($cid)) { $CatUa[$cid] } else { $srcCats[$cid].name })); $w.WriteEndElement()
+# Synthetic categories (with sy_code); goods of an unknown kind keep their Prom category
+$syCodes = New-Object System.Collections.Generic.List[string]; $syFallback = [ordered]@{}; $syUnmapped = New-Object System.Collections.Generic.List[string]
+foreach ($it in $ordered) {
+  $it.sy = Get-SyOwn $it
+  if ($it.sy) { $syCodes.Add($it.sy[0]) }
+  else { $syUnmapped.Add("$($it.kind): $($it.code)"); $syFallback[$it.cat] = $(if ($CatUa.ContainsKey($it.cat)) { $CatUa[$it.cat] } else { $srcCats[$it.cat].name }) }
 }
-$w.WriteEndElement()
+Write-SyCategories $w $syCodes.ToArray() $syFallback
 $w.WriteStartElement('offers')
 $maxName = 0; $other = 0
 foreach ($it in $ordered) {
@@ -819,12 +820,12 @@ foreach ($it in $ordered) {
   $w.WriteElementString('price', $it.price.ToString('0.##', $inv))
   if ($it.old -gt $it.price) { $w.WriteElementString('oldprice', $it.old.ToString('0.##', $inv)) }
   $w.WriteElementString('currencyId', 'UAH')
-  $w.WriteElementString('categoryId', $it.cat)
+  $w.WriteElementString('categoryId', $(if ($it.sy) { $it.sy[0] } else { $it.cat }))
+  Write-SyOffer $w $it.sy $it.warranty $it.old $it.price $(if ($it.avail) { $null } else { 0 })
   foreach ($pic in $it.pics) { $w.WriteElementString('picture', $pic) }
   $w.WriteStartElement('description'); $w.WriteCData((Safe-CData $ua.desc)); $w.WriteEndElement()
   $w.WriteStartElement('description_ru'); $w.WriteCData((Safe-CData $ru.desc)); $w.WriteEndElement()
   $w.WriteElementString('keywords', $ua.kw); $w.WriteElementString('keywords_ru', $ru.kw)
-  if (-not $it.avail) { $w.WriteElementString('quantity_in_stock', '0') }
   $params = Get-Params $it
   foreach ($pk in $params.Keys) { $w.WriteStartElement('param'); $w.WriteAttributeString('name', $pk); if ($ParamUnit.ContainsKey($pk)) { $w.WriteAttributeString('unit', $ParamUnit[$pk]) }; $w.WriteString($params[$pk]); $w.WriteEndElement() }
   $w.WriteEndElement()
@@ -837,5 +838,7 @@ $w.WriteEndDocument(); $w.Flush(); $w.Close()
 "cards: $($ordered.Count) (in stock: $(@($ordered | Where-Object { $_.avail }).Count)); copies merged: $($items.Count - $kept.Count) in $($merged.Count) cases ($priceConflicts with different prices); titles with 'варіант N': $variantTitles; max title length: $maxName"
 "by kind: " + ((@($ordered | Group-Object { $_.kind } | Sort-Object Count -Descending | ForEach-Object { "$($_.Name) $($_.Count)" })) -join ', ')
 if ($other) { Write-Warning "$other goods of an unknown type got their own Prom title" }
+"Synthetic categories: " + ((@($ordered | Where-Object { $_.sy } | Group-Object { $SyCatName[$_.sy[0]] } | Sort-Object Count -Descending | ForEach-Object { "$($_.Name) $($_.Count)" })) -join ', ')
+if ($syUnmapped.Count) { "no Synthetic category (left in their Prom category): " + ($syUnmapped -join '; ') }
 if ($noPics.Count) { "skipped, no photos on Prom: " + ((@($noPics | ForEach-Object { "$($_.titleUa) [$($_.code)]" })) -join '; ') }
 if ($ReportFile) { $merged | Sort-Object | Set-Content -Path $ReportFile -Encoding utf8 }
